@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { haversineDistanceMeters } from '../utils/geoUtils';
 
 export function useMetroGPS({ routeStations, mapStations, isJourneyActive }) {
+  // currentStationIndex represents the station we are currently approaching or stopped at
   const [currentStationIndex, setCurrentStationIndex] = useState(0);
   const [currentLocation, setCurrentLocation] = useState(null); // { lat, lng }
   const [currentSpeedKmH, setCurrentSpeedKmH] = useState(0);
@@ -12,30 +13,33 @@ export function useMetroGPS({ routeStations, mapStations, isJourneyActive }) {
   const [isDoorsOpen, setIsDoorsOpen] = useState(false);
   const [doorStatusText, setDoorStatusText] = useState('DOORS CLOSED');
 
-  // Internal Timers & Refs
+  // Timers & Refs
   const lowSpeedTimerRef = useRef(null);
   const departureTimerRef = useRef(null);
-  const simIntervalRef = useRef(null);
 
-  const activeTargetStation = routeStations?.[currentStationIndex];
-  const thisStationObj = mapStations?.[activeTargetStation?.id] || activeTargetStation;
+  // Target Station being approached or stopped at
+  const rawTargetStation = routeStations?.[currentStationIndex];
+  const targetStationObj = rawTargetStation ? (mapStations?.[rawTargetStation.id] || rawTargetStation) : null;
 
-  const nextStationObj = routeStations?.[currentStationIndex + 1]
-    ? (mapStations?.[routeStations[currentStationIndex + 1].id] || routeStations[currentStationIndex + 1])
-    : null;
-
+  // Destination Station (Last station of route)
   const destinationStationObj = routeStations?.[routeStations.length - 1]
     ? (mapStations?.[routeStations[routeStations.length - 1].id] || routeStations[routeStations.length - 1])
     : null;
 
+  // Next Interchange Station along remaining route
+  const nextInterchangeObj = routeStations?.slice(currentStationIndex).find(st => {
+    const fullSt = mapStations?.[st.id] || st;
+    return fullSt?.connInfo && fullSt.connInfo.length > 0;
+  });
+
   // Calculate distance to current target station
   let distanceToTargetMeters = 999999;
-  if (currentLocation && thisStationObj) {
+  if (currentLocation && targetStationObj) {
     distanceToTargetMeters = haversineDistanceMeters(
       currentLocation.lat,
       currentLocation.lng,
-      thisStationObj.lat,
-      thisStationObj.lng
+      targetStationObj.lat,
+      targetStationObj.lng
     );
   }
 
@@ -67,9 +71,9 @@ export function useMetroGPS({ routeStations, mapStations, isJourneyActive }) {
 
   // 2. Speed Threshold & State Machine Logic
   useEffect(() => {
-    if (!isJourneyActive || !thisStationObj) return;
+    if (!isJourneyActive || !targetStationObj) return;
 
-    const coveringRadius = thisStationObj.coveringRadius || 300;
+    const coveringRadius = targetStationObj.coveringRadius || 300;
     const isInsideCovering = distanceToTargetMeters <= coveringRadius;
 
     // Check low speed stop condition (0 - 1 km/h for 2 seconds) inside station covering
@@ -81,26 +85,26 @@ export function useMetroGPS({ routeStations, mapStations, isJourneyActive }) {
           setIsDoorsOpen(true);
           setDoorStatusText('DOORS OPENING');
 
-          // Schedule 15s departure check capability
+          // Schedule 15s departure readiness
           departureTimerRef.current = setTimeout(() => {
             setDoorStatusText('READY FOR DEPARTURE');
           }, 15000);
 
-        }, 2000); // 2 second delay as specified in prompt
+        }, 2000); // 2 second delay as specified
       }
     } else {
-      // Speed exceeds 1 km/h or outside covering zone
+      // Cancel timer if speed increases before 2 seconds
       if (lowSpeedTimerRef.current && !isDoorsOpen) {
         clearTimeout(lowSpeedTimerRef.current);
         lowSpeedTimerRef.current = null;
       }
     }
 
-    // Departure Check: Speed >= 3 km/h after 15 seconds at station stop
+    // Departure Check: Speed >= 3.0 km/h after station stop
     if (isDoorsOpen && currentSpeedKmH >= 3.0) {
-      // Close doors & move to next station
       setDoorStatusText('DOORS CLOSING');
-      setTimeout(() => {
+      
+      const transitionTimer = setTimeout(() => {
         setIsDoorsOpen(false);
         setIsStationArrived(false);
         setDoorStatusText('DOORS CLOSED');
@@ -111,24 +115,21 @@ export function useMetroGPS({ routeStations, mapStations, isJourneyActive }) {
         lowSpeedTimerRef.current = null;
         departureTimerRef.current = null;
 
-        // Advance to next station on route if available
+        // Advance target to NEXT station on route
         if (currentStationIndex < (routeStations?.length || 1) - 1) {
           setCurrentStationIndex(prev => prev + 1);
         }
-      }, 1500); // 1.5s door close animation transition
+      }, 1500);
+
+      return () => clearTimeout(transitionTimer);
     }
 
-  }, [currentSpeedKmH, distanceToTargetMeters, isDoorsOpen, isJourneyActive, thisStationObj]);
+  }, [currentSpeedKmH, distanceToTargetMeters, isDoorsOpen, isJourneyActive, targetStationObj, currentStationIndex, routeStations?.length]);
 
-  // Simulation Controls Manual Helper Functions
-  const setSimulatedLocationAndSpeed = (lat, lng, speedKmH) => {
-    setCurrentLocation({ lat, lng });
-    setCurrentSpeedKmH(speedKmH);
-  };
-
+  // Manual Controls & Helpers
   const forceArriveAtStation = () => {
-    if (thisStationObj) {
-      setCurrentLocation({ lat: thisStationObj.lat, lng: thisStationObj.lng });
+    if (targetStationObj) {
+      setCurrentLocation({ lat: targetStationObj.lat, lng: targetStationObj.lng });
       setCurrentSpeedKmH(0);
     }
   };
@@ -159,11 +160,10 @@ export function useMetroGPS({ routeStations, mapStations, isJourneyActive }) {
     isStationArrived,
     isDoorsOpen,
     doorStatusText,
-    thisStation: thisStationObj,
-    nextStation: nextStationObj,
+    targetStation: targetStationObj, // Same station object for both NEXT STATION and THIS STATION!
+    nextInterchange: nextInterchangeObj,
     destinationStation: destinationStationObj,
     distanceToNextMeters: distanceToTargetMeters,
-    setSimulatedLocationAndSpeed,
     forceArriveAtStation,
     forceDepartStation,
     resetJourney

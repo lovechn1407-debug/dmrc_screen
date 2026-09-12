@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import initialData from '../data/dmrcData.json';
+import { generateSplineControlPoints } from '../utils/geoUtils';
 
 const MapConfigContext = createContext();
 
@@ -19,6 +20,7 @@ export function MapConfigProvider({ children }) {
     return createInitialMapConfig(initialData);
   });
 
+  const [history, setHistory] = useState([]); // Undo history stack for curve points
   const [hasMapUpdatePending, setHasMapUpdatePending] = useState(false);
   const [pendingConfig, setPendingConfig] = useState(null);
 
@@ -60,6 +62,10 @@ export function MapConfigProvider({ children }) {
     };
   }
 
+  const pushHistory = () => {
+    setHistory(prev => [...prev.slice(-10), JSON.parse(JSON.stringify(mapConfig.curveControlPoints))]);
+  };
+
   const updateStationPosition = (stationId, lat, lng) => {
     setMapConfig(prev => ({
       ...prev,
@@ -88,6 +94,7 @@ export function MapConfigProvider({ children }) {
   };
 
   const addCurveControlPoint = (stationId1, stationId2, lat, lng) => {
+    pushHistory();
     const key = `${stationId1}_${stationId2}`;
     setMapConfig(prev => {
       const existing = prev.curveControlPoints[key] || [];
@@ -119,6 +126,7 @@ export function MapConfigProvider({ children }) {
   };
 
   const removeCurveControlPoint = (stationId1, stationId2, index) => {
+    pushHistory();
     const key = `${stationId1}_${stationId2}`;
     setMapConfig(prev => {
       const existing = [...(prev.curveControlPoints[key] || [])];
@@ -131,6 +139,38 @@ export function MapConfigProvider({ children }) {
         }
       };
     });
+  };
+
+  // Analyze Track algorithm: Calculates smooth Spline / Bezier curves for selected line
+  const analyzeLineTrack = (targetLineName) => {
+    pushHistory();
+    setMapConfig(prev => {
+      const newCurves = { ...prev.curveControlPoints };
+      const linesToProcess = targetLineName === 'ALL'
+        ? prev.lines
+        : prev.lines.filter(l => l.name === targetLineName);
+
+      linesToProcess.forEach(lineObj => {
+        const lineStations = lineObj.stations.map(st => prev.stations[st.id] || st);
+        const generatedMap = generateSplineControlPoints(lineStations);
+        Object.assign(newCurves, generatedMap);
+      });
+
+      return {
+        ...prev,
+        curveControlPoints: newCurves
+      };
+    });
+  };
+
+  const undoTrackAnalysis = () => {
+    if (history.length === 0) return;
+    const lastState = history[history.length - 1];
+    setHistory(prev => prev.slice(0, -1));
+    setMapConfig(prev => ({
+      ...prev,
+      curveControlPoints: lastState
+    }));
   };
 
   const saveMapConfig = () => {
@@ -169,6 +209,7 @@ export function MapConfigProvider({ children }) {
     localStorage.removeItem(STORAGE_KEY);
     setHasMapUpdatePending(false);
     setPendingConfig(null);
+    setHistory([]);
   };
 
   return (
@@ -179,6 +220,9 @@ export function MapConfigProvider({ children }) {
       addCurveControlPoint,
       updateCurveControlPoint,
       removeCurveControlPoint,
+      analyzeLineTrack,
+      undoTrackAnalysis,
+      canUndoTrack: history.length > 0,
       saveMapConfig,
       resetMapConfig,
       hasMapUpdatePending,

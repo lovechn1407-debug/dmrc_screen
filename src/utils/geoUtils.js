@@ -30,7 +30,7 @@ export function calculatePathLengthKm(points) {
 }
 
 // Generate quadratic/cubic Bezier points between start point, control points, and end point
-export function generateBezierPath(start, controlPoints, end, steps = 15) {
+export function generateBezierPath(start, controlPoints, end, steps = 20) {
   const allPoints = [start, ...controlPoints, end];
   if (allPoints.length <= 2) return [start, end];
 
@@ -51,4 +51,33 @@ function deCasteljau(points, t) {
     });
   }
   return deCasteljau(nextStage, t);
+}
+
+// Track Analyzer Algorithm: Generates smooth curved spline control points between line stations
+export function generateSplineControlPoints(stations) {
+  const controlMap = {};
+  if (!stations || stations.length < 3) return controlMap;
+
+  for (let i = 0; i < stations.length - 1; i++) {
+    const p0 = stations[Math.max(0, i - 1)];
+    const p1 = stations[i];
+    const p2 = stations[i + 1];
+    const p3 = stations[Math.min(stations.length - 1, i + 2)];
+
+    // Calculate tangent vector for smooth curvature
+    const dx = (p3.lng - p0.lng) * 0.15;
+    const dy = (p3.lat - p0.lat) * 0.15;
+
+    const midLat = (p1.lat + p2.lat) / 2 + dy * 0.25;
+    const midLng = (p1.lng + p2.lng) / 2 + dx * 0.25;
+
+    // Only add curve point if there is noticeable curvature
+    const directDist = haversineDistanceKm(p1.lat, p1.lng, p2.lat, p2.lng);
+    if (directDist > 0.4) {
+      const key = `${p1.id}_${p2.id}`;
+      controlMap[key] = [{ lat: midLat, lng: midLng }];
+    }
+  }
+
+  return controlMap;
 }
